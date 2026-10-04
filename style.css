@@ -1,0 +1,74 @@
+/* Main background */
+.main { background-color: #F8FAFC; }
+
+/* Header bar */
+.header-box {
+    background: linear-gradient(135deg, #1B3A6B, #2E6DA4);
+    padding: 20px 30px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+}
+.header-box h1 {
+    color: white;
+    font-size: 28px;
+    margin: 0;
+    font-weight: 700;
+}
+.header-box p {
+    color: #BDD5EA;
+    margin: 4px 0 0 0;
+    font-size: 14px;
+}
+
+/* Metric cards */
+.metric-card {
+    background: white;
+    border-radius: 10px;
+    padding: 16px 20px;
+    border-left: 4px solid #2E6DA4;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    margin-bottom: 10px;
+}
+.metric-card h3 {
+    color: #1B3A6B;
+    font-size: 26px;
+    margin: 0;
+    font-weight: 700;
+}
+.metric-card p {
+    color: #888;
+    font-size: 13px;
+    margin: 2px 0 0 0;
+}
+
+/* Tab styling */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    background: white;
+    padding: 8px;
+    border-radius: 10px;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px;
+    padding: 8px 20px;
+    font-weight: 600;
+}
+
+/* Buttons */
+.stButton > button, .stFormSubmitButton > button {
+    background: linear-gradient(135deg, #1B3A6B, #2E6DA4);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 24px;
+    font-weight: 600;
+    width: 100%;
+}
+.stButton > button:hover, .stFormSubmitButton > button:hover {
+    background: #1B3A6B;
+    border: none;
+}
+
+/* Hide streamlit branding */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
