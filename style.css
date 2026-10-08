@@ -1,74 +1,135 @@
-/* Main background */
-.main { background-color: #F8FAFC; }
+/* ── Page chrome ─────────────────────────────────────────────── */
+header[data-testid="stHeader"] { display: none; }
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none; }
+#MainMenu, footer { visibility: hidden; }
+.block-container { padding: 0.5rem 1.5rem 0.75rem; max-width: 100%; }
 
-/* Header bar */
-.header-box {
-    background: linear-gradient(135deg, #1B3A6B, #2E6DA4);
-    padding: 20px 30px;
-    border-radius: 12px;
-    margin-bottom: 20px;
-}
-.header-box h1 {
-    color: white;
-    font-size: 28px;
-    margin: 0;
-    font-weight: 700;
-}
-.header-box p {
-    color: #BDD5EA;
-    margin: 4px 0 0 0;
-    font-size: 14px;
+/* Side-by-side panels fit the window exactly, so the page itself never needs a scrollbar —
+   only the panels scroll. Below these sizes the panels stack and the page scrolls normally. */
+@media (min-width: 1024px) and (min-height: 560px) {
+    html, body, [data-testid="stApp"], [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+        overflow: hidden !important;
+    }
 }
 
-/* Metric cards */
-.metric-card {
-    background: white;
-    border-radius: 10px;
-    padding: 16px 20px;
-    border-left: 4px solid #2E6DA4;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+/* Slim, quiet scrollbars inside the panels */
+* { scrollbar-width: thin; scrollbar-color: #CBD5E1 transparent; }
+
+/* ── Top bar ─────────────────────────────────────────────────── */
+.topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 2px 8px;
     margin-bottom: 10px;
+    border-bottom: 1px solid #E2E8F0;
 }
-.metric-card h3 {
-    color: #1B3A6B;
-    font-size: 26px;
-    margin: 0;
-    font-weight: 700;
+.brand-row { display: flex; align-items: center; }
+.brand-logo {
+    height: 34px; width: auto; display: block;
+    margin-right: 16px; padding-right: 16px; border-right: 1px solid #CBD5E1;
 }
-.metric-card p {
-    color: #888;
-    font-size: 13px;
-    margin: 2px 0 0 0;
+.brand { font-size: 19px; font-weight: 700; color: #0F2A4A; letter-spacing: -0.02em; }
+.brand-sub {
+    font-size: 13px; font-weight: 500; color: #64748B;
+    margin-left: 12px; padding-left: 12px; border-left: 1px solid #CBD5E1;
 }
 
-/* Tab styling */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
-    background: white;
-    padding: 8px;
-    border-radius: 10px;
+/* ── Panels ──────────────────────────────────────────────────── */
+/* Fill the window height below the top bar; each panel scrolls on its own. Streamlit sizes a
+   fixed-height container through its wrapper's flex-basis, so the wrapper is what's overridden. */
+div:has(> [class*="st-key-panel_"]) {
+    flex: 0 0 max(460px, calc(100vh - 92px)) !important;
+    height: max(460px, calc(100vh - 92px)) !important;
 }
-.stTabs [data-baseweb="tab"] {
-    border-radius: 8px;
-    padding: 8px 20px;
+[class*="st-key-panel_"] { background: #FFFFFF; border-radius: 10px; }
+/* The chat history takes whatever height is left in the chat panel after header, suggestions and input. */
+div:has(> [class*="st-key-chat_box"]) {
+    flex: 1 1 0 !important;
+    height: auto !important;
+    min-height: 120px;
+}
+.panel-title { font-size: 15px; font-weight: 600; color: #0F172A; margin: 0; }
+.panel-sub { font-size: 12px; color: #64748B; margin: 2px 0 6px; }
+.section-label {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #94A3B8; margin: 10px 0 2px;
+}
+.section-label.flush { margin: 0; }
+.muted { font-size: 12px; color: #94A3B8; padding: 4px 10px; }
+
+/* ── Source list (left) ──────────────────────────────────────── */
+[class*="st-key-nav"] button {
+    justify-content: flex-start;
+    padding: 7px 10px;
+    min-height: 0;
+    border-radius: 6px;
+    color: #334155;
+    font-weight: 500;
+}
+[class*="st-key-nav"] button > div { justify-content: flex-start; }
+[class*="st-key-nav"] button p { text-align: left; font-size: 13.5px; }
+[class*="st-key-nav"] button:hover { background: #F1F5F9; color: #0F172A; }
+[class*="st-key-navactive"] button {
+    background: #EFF6FF;
+    color: #1D4ED8;
     font-weight: 600;
+    box-shadow: inset 3px 0 0 #1D4ED8;
 }
 
-/* Buttons */
-.stButton > button, .stFormSubmitButton > button {
-    background: linear-gradient(135deg, #1B3A6B, #2E6DA4);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    padding: 10px 24px;
-    font-weight: 600;
-    width: 100%;
-}
-.stButton > button:hover, .stFormSubmitButton > button:hover {
-    background: #1B3A6B;
-    border: none;
-}
+/* Compact folder picker */
+[class*="st-key-folder"] [data-testid="stFileUploaderDropzone"] { padding: 8px 10px; }
+[class*="st-key-folder"] [data-testid="stFileUploaderDropzoneInstructions"] small { display: none; }
+/* Once a folder is loaded, hide the picker and its file chips — the source list shows the files */
+[class*="st-key-folder"]:has([data-testid="stFileChip"]) { display: none; }
+.folder-info { font-size: 12px; color: #64748B; padding-left: 10px; }
 
-/* Hide streamlit branding */
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
+/* ── Dataset header & cards (middle) ─────────────────────────── */
+.ds-title { display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 700; color: #0F172A; }
+.tag {
+    font-size: 11px; font-weight: 600; color: #1D4ED8; background: #EFF6FF;
+    border: 1px solid #DBEAFE; border-radius: 999px; padding: 2px 9px;
+}
+.ds-meta {
+    display: flex; flex-wrap: wrap; gap: 6px 22px;
+    font-size: 12.5px; color: #64748B;
+    margin: 6px 0 12px; padding-bottom: 12px; border-bottom: 1px solid #EEF2F7;
+}
+.ds-meta b { color: #0F172A; font-weight: 600; }
+.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+.card-title { font-size: 14px; font-weight: 600; color: #0F172A; }
+[class*="st-key-summary_card"] { background: #FBFCFE; }
+[class*="st-key-summary_card"] li,
+[class*="st-key-summary_card"] p { font-size: 13.5px; line-height: 1.6; color: #334155; }
+
+[data-testid="stExpander"] details { border-color: #E2E8F0; border-radius: 8px; }
+[data-testid="stExpander"] summary p { font-size: 14px; font-weight: 600; color: #0F172A; }
+
+.empty { text-align: center; padding: 120px 24px; }
+.empty-title { font-size: 17px; font-weight: 600; color: #0F172A; }
+.empty-sub { font-size: 13px; color: #64748B; margin-top: 6px; }
+
+/* ── Chat (right) ────────────────────────────────────────────── */
+[data-testid="stChatMessage"] { background: transparent; padding: 4px 2px; gap: 8px; }
+[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li { font-size: 13.5px; line-height: 1.55; }
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) { flex-direction: row-reverse; }
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageAvatarUser"] { display: none; }
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
+    flex-grow: 0;
+    max-width: 85%;
+    background: #1E40AF;
+    border-radius: 14px 14px 2px 14px;
+    padding: 8px 14px;
+}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) p { color: #FFFFFF; }
+[data-testid="stChatMessage"]:not(:has([data-testid="stChatMessageAvatarUser"])) [data-testid="stChatMessageContent"] {
+    background: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    border-radius: 2px 14px 14px 14px;
+    padding: 10px 14px;
+}
+.chat-label {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #64748B; margin-bottom: 2px;
+}
+.chat-empty { font-size: 13px; color: #94A3B8; text-align: center; padding: 40px 12px; }

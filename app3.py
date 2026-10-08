@@ -1,47 +1,38 @@
+import base64
 import html
+from collections import Counter
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pandas as pd
 import streamlit as st
 
 from analyzer2 import validate_data, generate_summary
 from chat_engine import respond, route_message, INTENT_CHITCHAT
-from db_connector import test_connection, get_all_views, get_all_tables, load_table
-from llm import transcribe_audio, text_to_speech
-
-MAX_SPEECH_CHARS = 800  # keep TTS calls short/fast; replies are already meant to be concise
+from db_connector import get_all_views, load_table
 
 BASE_DIR = Path(__file__).parent
 
 # ── Constants ─────────────────────────────────────────────────────
 APP_TITLE = "InsightIQ"
-FOOTER_TEXT = "Genpact © 2026 | Confidential"
-HEADER_SUBTITLE = "Powered by Groq AI &nbsp;|&nbsp; Developed by Genpact &nbsp;|&nbsp; POC v1.0"
-SOURCE_FILE = "📂 Excel / CSV"
-SOURCE_SQL = "🗄️ SQL Server"
+# Fallback heights only: style.css stretches the panels to the window and gives the chat the leftover space.
+PANEL_HEIGHT = 680
+CHAT_HEIGHT = 400
+USER_AVATAR = ":material/person:"
+AI_AVATAR = ":material/auto_awesome:"
 
 # ── Page Config ───────────────────────────────────────────────────
 st.set_page_config(
     page_title=APP_TITLE,
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed",
 )
 
 
 # ── Helpers ───────────────────────────────────────────────────────
 def load_css(path: Path) -> None:
     st.markdown(f"<style>{path.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
-
-
-def metric_card(value, label: str, trusted_label: bool = False) -> None:
-    """Render a card. Dynamic text is HTML-escaped unless the label is our own static markup."""
-    label_html = label if trusted_label else html.escape(label)
-    st.markdown(
-        f'<div class="metric-card"><h3>{html.escape(str(value))}</h3><p>{label_html}</p></div>',
-        unsafe_allow_html=True,
-    )
 
 
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -64,7 +55,7 @@ def read_upload(name: str, data: bytes) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def read_sql_table(name: str) -> pd.DataFrame:
+def read_view(name: str) -> pd.DataFrame:
     return _clean_columns(load_table(name))
 
 
@@ -84,7 +75,7 @@ def set_dataset(df: pd.DataFrame, name: str, is_sql: bool) -> None:
 
 
 def clear_dataset() -> None:
-    for key in ("df", "source_name", "is_sql_source", "results", "chat", "stats", "file_key"):
+    for key in ("df", "source_name", "is_sql_source", "results", "chat", "stats", "loaded_key", "selected"):
         st.session_state.pop(key, None)
 
 
@@ -97,39 +88,27 @@ def get_result(key: str):
 
 
 def show_error(prefix: str, e: Exception) -> None:
-    st.error(f"❌ {prefix}: {e}")
+    st.error(f"{prefix}: {e}")
 
 
 def show_chart(chart: dict) -> None:
     if chart["kind"] == "line":
-        st.line_chart(chart["data"])
+        st.line_chart(chart["data"], height=240)
     else:
-        st.bar_chart(chart["data"], sort=False)
+        st.bar_chart(chart["data"], sort=False, height=240)
 
 
 def render_message(msg: dict) -> None:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    is_user = msg["role"] == "user"
+    with st.chat_message(msg["role"], avatar=USER_AVATAR if is_user else AI_AVATAR):
+        if not is_user:
+            st.markdown('<div class="chat-label">AI response</div>', unsafe_allow_html=True)
+        ai_markdown(msg["content"])
         if msg.get("chart"):
             show_chart(msg["chart"])
         if msg.get("table") is not None:
             with st.expander(f"Result table ({len(msg['table']):,} rows)", expanded=not msg.get("chart")):
-                st.dataframe(msg["table"], use_container_width=True)
-        if msg.get("code"):
-            with st.expander("Generated SQL" if msg["code_lang"] == "sql" else "Generated code", expanded=False):
-                st.code(msg["code"], language=msg["code_lang"])
-
-
-def speak(text: str) -> tuple[bytes, str] | None:
-    """Text-to-speech for a reply. Returns None if there's nothing to say; surfaces (not hides)
-    any failure, since silently swallowing it just looks like "voice does nothing" to the user."""
-    if not text.strip():
-        return None
-    try:
-        return text_to_speech(text[:MAX_SPEECH_CHARS])
-    except Exception as e:
-        st.toast(f"🔊 Voice reply failed: {e}", icon="⚠️")
-        return None
+                st.dataframe(msg["table"], width="stretch")
 
 
 def chat_transcript(messages: list) -> str:
@@ -137,306 +116,333 @@ def chat_transcript(messages: list) -> str:
     for m in messages:
         who = "You" if m["role"] == "user" else "Assistant"
         lines.append(f"{who}: {m['content']}")
-        if m.get("code"):
-            lines.append(f"[{m['code_lang'].upper()}]\n{m['code']}")
         lines.append("")
     return "\n".join(lines)
 
 
-def render_chat(df, source_name, is_sql: bool) -> None:
-    """Chat with memory: every turn is kept in session_state and earlier turns are sent to the AI."""
-    messages = st.session_state.setdefault("chat", [])
+def html_block(markup: str) -> None:
+    st.markdown(markup, unsafe_allow_html=True)
 
-    # Audio for the most recent reply, queued by the previous run; played once, then dropped.
-    pending_audio = st.session_state.pop("voice_audio", None)
-    for i, msg in enumerate(messages):
-        render_message(msg)
-        if pending_audio and pending_audio[0] == i:
-            audio_bytes, audio_mime = pending_audio[1]
-            st.audio(audio_bytes, format=audio_mime, autoplay=True)
 
-    # Native mic icon inside the chat box itself (Streamlit >= 1.41's built-in audio recorder).
-    submission = st.chat_input(
-        "Ask a question, e.g. \"top 5 products by sales\" — or tap 🎤 to speak",
-        accept_audio=True,
-    )
+def ai_markdown(text: str) -> None:
+    """Render AI text. Dollar signs are escaped: Streamlit treats "$2.36 to $474.57" as a LaTeX formula."""
+    st.markdown(text.replace("$", r"\$"))
 
-    question = None
-    spoken_input = False  # True when this turn's question came from the mic, not typing
-    if submission:
-        if isinstance(submission, str):
-            question = submission.strip()
-        else:
-            typed = (submission.text or "").strip()
-            if typed:
-                question = typed
-            elif submission.audio is not None:
-                with st.spinner("🎧 Transcribing..."):
-                    try:
-                        question = transcribe_audio(submission.audio.read(), filename="audio.wav")
-                        spoken_input = bool(question)
-                    except Exception as e:
-                        st.toast(f"🎤 Transcription failed: {e}", icon="⚠️")
-                if not question:
-                    st.toast("🎤 Didn't catch any speech — try again.")
 
-    if df is None:
-        if question and question.strip():
-            question = question.strip()
-            messages.append({"role": "user", "content": question})
-            route = route_message(question, messages[:-1], [])
-            if route["intent"] == INTENT_CHITCHAT:
-                # Small talk doesn't need data loaded — answer right away.
-                messages.append({"role": "assistant",
-                                  "content": route.get("reply") or "Hi! How can I help you today?"})
-            else:
-                # A real data question: park it, ask the user to pick a source, answer it once loaded
-                st.session_state["pending_question"] = question
-                messages.append({"role": "assistant", "content": "I don't have any data loaded yet. "
-                                 "Upload a file or select a table from the sidebar, and I'll answer your "
-                                 "question right away."})
-            st.rerun()
+# ── Left panel: data sources ──────────────────────────────────────
+def select_source(key: tuple) -> None:
+    st.session_state["selected"] = key
+
+
+def clear_folder() -> None:
+    st.session_state["folder_gen"] = st.session_state.get("folder_gen", 0) + 1
+    if (st.session_state.get("loaded_key") or ("",))[0] == "file":
+        clear_dataset()
+
+
+def file_labels(paths) -> dict:
+    """Display name per uploaded path: just the file name, no folder or extension
+    ("archive (1)/rentals.csv" → "rentals"). A name found more than once gets its folder
+    (or, within the same folder, its extension) appended so the entries stay distinct."""
+    paths = list(paths)
+    counts = Counter(PurePosixPath(p).stem for p in paths)
+    labels = {}
+    for p in paths:
+        path = PurePosixPath(p)
+        labels[p] = path.stem if counts[path.stem] == 1 else f"{path.stem} ({path.parent.name or 'root'})"
+    clashes = Counter(labels.values())
+    for p in paths:
+        if clashes[labels[p]] > 1:
+            labels[p] = f"{labels[p][:-1]}, {PurePosixPath(p).suffix.lstrip('.')})" if labels[p].endswith(")") \
+                else f"{labels[p]} ({PurePosixPath(p).suffix.lstrip('.')})"
+    return labels
+
+
+def source_item(label: str, key: tuple, widget_key: str) -> None:
+    """One clickable row in the source list; the active dataset gets the highlighted style."""
+    # "selected" is set by the click callback before this run, so the highlight moves on the same click
+    active = (st.session_state.get("selected") or st.session_state.get("loaded_key")) == key
+    st.button(label, key=f"{'navactive' if active else 'nav'}_{widget_key}", type="tertiary",
+              width="stretch", on_click=select_source, args=(key,))
+
+
+def load_views() -> None:
+    """Fetch the view list once per session (not on every rerun). A failure is kept too, so a down
+    server doesn't cost a connection timeout on every click — the refresh button retries."""
+    if "views" in st.session_state:
+        return
+    with st.spinner("Loading views..."):
+        try:
+            st.session_state["views"] = get_all_views()
+            st.session_state.pop("views_error", None)
+        except Exception as e:
+            st.session_state["views"] = []
+            st.session_state["views_error"] = str(e)
+
+
+def render_sources() -> dict:
+    """Left panel. Returns the files from the selected folder, keyed by name."""
+    html_block('<p class="panel-title">Data Sources</p>'
+               '<p class="panel-sub">Select a view or file to analyze.</p>')
+    query = st.text_input("Search", placeholder="Search views and files",
+                          label_visibility="collapsed", key="source_search").strip().lower()
+
+    # SQL Server views
+    col_label, col_refresh = st.columns([5, 1], vertical_alignment="center")
+    with col_label:
+        html_block('<div class="section-label flush">SQL Server views</div>')
+    with col_refresh:
+        if st.button(":material/refresh:", key="refresh_views", type="tertiary", help="Refresh view list"):
+            st.session_state.pop("views", None)
+    load_views()
+    views = st.session_state["views"]
+    if st.session_state.get("views_error"):
+        st.error(f"Could not list views. Check the .env connection settings. {st.session_state['views_error']}")
+    elif not views:
+        html_block('<div class="muted">No views found.</div>')
+    else:
+        shown = [v for v in views if query in v.lower()]
+        for i, view in enumerate(shown):
+            source_item(view, ("view", view), f"v{i}")
+        if not shown:
+            html_block('<div class="muted">No views match your search.</div>')
+
+    # Files from a folder (the browser uploads every Excel/CSV file in it and its subfolders).
+    # Once a folder is loaded, style.css hides the picker and its file chips; the list below replaces them.
+    html_block('<div class="section-label">Files</div>')
+    files = st.file_uploader(
+        "Folder", type=["xlsx", "xls", "csv"], accept_multiple_files="directory",
+        label_visibility="collapsed", key=f"folder_{st.session_state.get('folder_gen', 0)}",
+    ) or []
+    files_by_name = {f.name: f for f in files}
+    if files_by_name:
+        top_folders = {PurePosixPath(n).parts[0] for n in files_by_name if len(PurePosixPath(n).parts) > 1}
+        folder = f"{top_folders.pop()} · " if len(top_folders) == 1 else ""
+        col_info, col_change = st.columns([3, 2], vertical_alignment="center")
+        with col_info:
+            html_block(f'<div class="folder-info">{html.escape(folder)}{len(files_by_name)} files</div>')
+        with col_change:
+            st.button("Change folder", key="change_folder", type="tertiary", on_click=clear_folder)
+
+    labels = file_labels(files_by_name)
+    shown = sorted((n for n in files_by_name if query in labels[n].lower()), key=lambda n: labels[n].lower())
+    for i, name in enumerate(shown):
+        f = files_by_name[name]
+        source_item(labels[name], ("file", f.name, f.size), f"f{i}")
+    if files_by_name and not shown:
+        html_block('<div class="muted">No files match your search.</div>')
+    return files_by_name
+
+
+# ── Middle panel: dataset summary ─────────────────────────────────
+def sync_selection(files_by_name: dict) -> None:
+    """Load whatever was clicked in the left panel, unless it's already the active dataset."""
+    loaded = st.session_state.get("loaded_key")
+    if loaded and loaded[0] == "file" and loaded[1] not in files_by_name:
+        clear_dataset()  # its folder was cleared or replaced — drop the stale data
         return
 
-    pending = st.session_state.pop("pending_question", None)
-    if pending:
-        question = pending
-    if question and question.strip():
-        question = question.strip()
-        history = list(messages)
-        messages.append({"role": "user", "content": question})
-        render_message(messages[-1])
-        try:
-            with st.chat_message("assistant"):
-                with st.spinner("🤖 Thinking..."):
-                    reply = respond(df, source_name, is_sql, question, history)
-            messages.append(reply)
-            if spoken_input or st.session_state.get("voice_on"):
-                with st.spinner("🔊 Preparing voice..."):
-                    spoken = speak(reply["content"])
-                if spoken:
-                    st.session_state["voice_audio"] = (len(messages) - 1, spoken)
-            st.rerun()
-        except Exception as e:
-            messages.pop()  # drop the unanswered question so it doesn't pollute the history
-            show_error("AI request failed", e)
+    selected = st.session_state.get("selected")
+    if not selected or selected == loaded:
+        return
+    kind, name = selected[0], selected[1]
+    label = name if kind == "view" else file_labels(files_by_name).get(name, name)
+    try:
+        with st.spinner(f"Loading {label}..."):
+            if kind == "view":
+                df = read_view(name)
+            else:
+                f = files_by_name[name]
+                df = read_upload(f.name, f.getvalue())
+    except Exception as e:
+        st.session_state["selected"] = loaded
+        show_error(f"Could not load {label}", e)
+        return
+    set_dataset(df, label, is_sql=kind == "view")
+    st.session_state["loaded_key"] = selected
 
-    if messages:
-        col_dl, col_clear = st.columns(2)
-        with col_dl:
-            st.download_button("📥 Download Chat", chat_transcript(messages), file_name="kestra_chat.txt",
-                               mime="text/plain", key="chat_dl")
-        with col_clear:
-            if st.button("🗑️ Clear Chat", key="chat_clear"):
-                st.session_state["chat"] = []
+
+def render_summary_card(df: pd.DataFrame) -> None:
+    with st.container(border=True, key="summary_card"):
+        html_block('<div class="card-head"><span class="card-title">Executive Summary</span>'
+                   '<span class="tag">AI-generated · verify with source</span></div>')
+
+        summary = get_result("summary")
+        if summary is None and not get_result("summary_error"):
+            with st.spinner("Generating executive summary..."):
+                try:
+                    summary = generate_summary(df)
+                    store_result("summary", summary)
+                except Exception as e:
+                    store_result("summary_error", str(e))
+
+        if summary:
+            ai_markdown(summary)
+            st.download_button("Download summary", summary, file_name="kestra_executive_summary.txt",
+                               mime="text/plain", type="tertiary", icon=":material/download:")
+        else:
+            st.error(f"Could not generate the summary: {get_result('summary_error')}")
+            if st.button("Try again", key="summary_retry", type="tertiary"):
+                st.session_state["results"].pop("summary_error", None)
                 st.rerun()
 
 
-# ── Styling & Header ──────────────────────────────────────────────
-load_css(BASE_DIR / "style.css")
-
-st.markdown(f"""
-<div class="header-box">
-    <h1>📊 InsightIQ</h1>
-    <p>{HEADER_SUBTITLE}</p>
-</div>
-""", unsafe_allow_html=True)
-
-# ── Sidebar ───────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### 📁 Data Source")
-
-    source = st.radio("Choose source:", [SOURCE_FILE, SOURCE_SQL])
-
-    if source == SOURCE_FILE:
-        uploaded_file = st.file_uploader(
-            "Upload Excel or CSV file",
-            type=["xlsx", "xls", "csv"]
-        )
-        if uploaded_file is not None:
-            file_key = (uploaded_file.name, uploaded_file.size)
-            if st.session_state.get("file_key") != file_key:
-                try:
-                    df_loaded = read_upload(uploaded_file.name, uploaded_file.getvalue())
-                except Exception as e:
-                    show_error("Error loading file", e)
-                    st.stop()
-                set_dataset(df_loaded, uploaded_file.name, is_sql=False)
-                st.session_state["file_key"] = file_key
-        elif "file_key" in st.session_state:
-            # The uploaded file was removed — drop its stale data
-            clear_dataset()
-
-    else:
-        st.markdown("#### SQL Server Connection")
-        if st.button("Test Connection"):
-            try:
-                if test_connection():
-                    st.success("Connected")
-                else:
-                    st.error("Failed - Check .env")
-            except Exception as e:
-                show_error("Connection error", e)
-
-        data_type = st.radio("Load:", ["Views", "Tables", "Both"])
-        if st.button("📋 Load List"):
-            try:
-                items = []
-                if data_type in ("Views", "Both"):
-                    items += get_all_views()
-                if data_type in ("Tables", "Both"):
-                    items += get_all_tables()
-                st.session_state["db_items"] = items
-                st.success(f"Found {len(items)} items")
-            except Exception as e:
-                show_error("Error", e)
-
-        if "db_items" in st.session_state:
-            selected_name = st.selectbox("Select:", st.session_state["db_items"])
-            if st.button("📥 Load Data"):
-                with st.spinner(f"Loading {selected_name}..."):
-                    try:
-                        loaded_df = read_sql_table(selected_name)
-                    except Exception as e:
-                        show_error(f"Could not load {selected_name}", e)
-                    else:
-                        set_dataset(loaded_df, selected_name, is_sql=True)
-                        st.session_state.pop("file_key", None)
-                        st.success(f"✅ {len(loaded_df):,} rows loaded")
-
-    st.markdown("---")
-    st.markdown("### 🎙️ Voice")
-    st.caption("Tap 🎤 in the chat box to ask by voice — replies to voice questions are always spoken back.")
-    st.checkbox("Also speak replies to typed questions", key="voice_on")
-
-    st.markdown("---")
-    st.caption(FOOTER_TEXT)
-
-# ── Main Content ──────────────────────────────────────────────────
-df = st.session_state.get("df")
-
-if df is None:
-    st.markdown("### 👈 Upload a file or load data from SQL Server to get started")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        metric_card("💬", "<b>Ask AI</b> — Type any question about your data in plain English", trusted_label=True)
-    with col2:
-        metric_card("🔍", "<b>Validate</b> — Auto-detect missing values, duplicates, anomalies", trusted_label=True)
-    with col3:
-        metric_card("📋", "<b>Summary</b> — Generate executive summary with real numbers", trusted_label=True)
-
-    st.markdown("---")
-    render_chat(None, None, False)
-
-else:
-    source_name = st.session_state.get("source_name", "Uploaded file")
-    is_sql = st.session_state.get("is_sql_source", False)
-    stats = st.session_state["stats"]
-    st.caption(f"📌 Currently analyzing: **{source_name}**")
-
-    # ── Dataset Metrics ───────────────────────────────────────────
-    cols = st.columns(4)
-    with cols[0]:
-        metric_card(f"{stats['rows']:,}", "Total Rows")
-    with cols[1]:
-        metric_card(stats["cols"], "Total Columns")
-    with cols[2]:
-        metric_card(f"{stats['missing']:,}", "Missing Values")
-    with cols[3]:
-        metric_card(f"{stats['dupes']:,}", "Duplicate Rows")
-
-    # ── Data Preview ──────────────────────────────────────────────
-    with st.expander("📊 Preview Data", expanded=False):
-        st.dataframe(df.head(20), use_container_width=True)
-        st.caption(f"Showing first 20 of {len(df):,} rows")
-
-    st.markdown("---")
-
-    tab1, tab2, tab3 = st.tabs([
-        "💬 Chat",
-        "🔍 Validate Data",
-        "📋 Executive Summary"
-    ])
-
-    # ── TAB 1 — Chat ──────────────────────────────────────────────
-    with tab1:
-        render_chat(df, source_name, is_sql)
-
-    # ── TAB 2 — Validate ──────────────────────────────────────────
-    with tab2:
-        st.markdown("#### Automated Data Quality Report")
-        st.markdown("Detects missing values, duplicates, negative values and generates AI recommendations.")
+def render_quality(df: pd.DataFrame) -> None:
+    with st.expander("Data Quality", expanded=False):
+        missing = df.isnull().sum().reset_index()
+        missing.columns = ["Column", "Missing Count"]
+        missing["Missing %"] = (missing["Missing Count"] / max(len(df), 1) * 100).round(1)
+        missing = missing[missing["Missing Count"] > 0]
+        negatives = pd.DataFrame([
+            {"Column": col, "Negative Count": int((df[col] < 0).sum())}
+            for col in df.select_dtypes(include="number").columns
+            if (df[col] < 0).any()
+        ])
 
         col1, col2 = st.columns(2)
         with col1:
-            missing_df = df.isnull().sum().reset_index()
-            missing_df.columns = ["Column", "Missing Count"]
-            missing_df["Missing %"] = (missing_df["Missing Count"] / len(df) * 100).round(1)
-            missing_df = missing_df[missing_df["Missing Count"] > 0]
-
-            if len(missing_df) > 0:
-                st.markdown("**Missing Values:**")
-                st.dataframe(missing_df, use_container_width=True)
+            st.markdown("**Missing values**")
+            if len(missing):
+                st.dataframe(missing, width="stretch", hide_index=True)
             else:
-                st.success("✅ No missing values found")
-
+                st.caption("No missing values.")
         with col2:
-            neg_data = [
-                {"Column": col, "Negative Count": int((df[col] < 0).sum())}
-                for col in df.select_dtypes(include="number").columns
-                if (df[col] < 0).any()
-            ]
-            if neg_data:
-                st.markdown("**Negative Values:**")
-                st.dataframe(pd.DataFrame(neg_data), use_container_width=True)
+            st.markdown("**Negative values**")
+            if len(negatives):
+                st.dataframe(negatives, width="stretch", hide_index=True)
             else:
-                st.success("✅ No negative values found")
+                st.caption("No negative values.")
 
-        if st.button("🔍 Run Full AI Validation Report", key="validate_btn"):
+        if st.button("Run AI quality review", key="validate_btn", type="secondary"):
             try:
-                with st.spinner("Running validation..."):
+                with st.spinner("Reviewing data quality..."):
                     store_result("validate", validate_data(df))
             except Exception as e:
                 show_error("Validation failed", e)
 
         report = get_result("validate")
         if report:
-            with st.container(border=True):
-                st.markdown("**🔍 AI Validation Report:**")
-                st.markdown(report)
+            ai_markdown(report)
+            st.download_button("Download report", report, file_name="kestra_validation_report.txt",
+                               mime="text/plain", type="tertiary", icon=":material/download:")
 
-            st.download_button(
-                label="📥 Download Validation Report",
-                data=report,
-                file_name="kestra_validation_report.txt",
-                mime="text/plain"
-            )
 
-    # ── TAB 3 — Summary ───────────────────────────────────────────
-    with tab3:
-        st.markdown("#### Executive Summary")
-        st.markdown("Generates a management-ready summary with real numbers from your data.")
+def render_overview(files_by_name: dict) -> None:
+    sync_selection(files_by_name)
+    df = st.session_state.get("df")
+    if df is None:
+        html_block('<div class="empty"><div class="empty-title">Select a data source</div>'
+                   '<div class="empty-sub">Choose a SQL Server view or a file from the left panel to see '
+                   'its executive summary, data quality and a preview.</div></div>')
+        return
 
-        st.markdown("**Dataset Statistics:**")
-        st.dataframe(df.describe(include="all").T.astype(str), use_container_width=True)
+    name = st.session_state.get("source_name", "Dataset")
+    stats = st.session_state["stats"]
+    kind = "SQL view" if st.session_state.get("is_sql_source") else "File"
+    html_block(
+        f'<div class="ds-title">{html.escape(name)}<span class="tag">{kind}</span></div>'
+        f'<div class="ds-meta"><span>Rows <b>{stats["rows"]:,}</b></span>'
+        f'<span>Columns <b>{stats["cols"]:,}</b></span>'
+        f'<span>Missing values <b>{stats["missing"]:,}</b></span>'
+        f'<span>Duplicate rows <b>{stats["dupes"]:,}</b></span></div>'
+    )
 
-        if st.button("📋 Generate Executive Summary", key="summary_btn"):
-            try:
-                with st.spinner("Generating summary..."):
-                    store_result("summary", generate_summary(df))
-            except Exception as e:
-                show_error("Summary failed", e)
+    render_summary_card(df)
+    render_quality(df)
+    with st.expander("Data Preview", expanded=False):
+        st.dataframe(df.head(20), width="stretch")
+        st.caption(f"Showing first 20 of {len(df):,} rows")
+    with st.expander("Column Statistics", expanded=False):
+        st.dataframe(df.describe(include="all").T.astype(str), width="stretch")
 
-        summary = get_result("summary")
-        if summary:
-            with st.container(border=True):
-                st.markdown("**📋 Executive Summary:**")
-                st.markdown(summary)
 
-            st.download_button(
-                label="📥 Download Summary",
-                data=summary,
-                file_name="kestra_executive_summary.txt",
-                mime="text/plain"
-            )
+# ── Right panel: chat ─────────────────────────────────────────────
+def clear_chat() -> None:
+    st.session_state["chat"] = []
+
+
+def render_chat() -> None:
+    """Chat with memory: every turn is kept in session_state and earlier turns are sent to the AI."""
+    df = st.session_state.get("df")
+    source_name = st.session_state.get("source_name")
+    is_sql = st.session_state.get("is_sql_source", False)
+    messages = st.session_state.setdefault("chat", [])
+
+    col_title, col_dl, col_clear = st.columns([6, 1, 1], vertical_alignment="center")
+    with col_title:
+        html_block('<p class="panel-title">Ask About This Data</p>'
+                   '<p class="panel-sub">Ask questions in plain English.</p>')
+    if messages:
+        with col_dl:
+            st.download_button(":material/download:", chat_transcript(messages), file_name="kestra_chat.txt",
+                               mime="text/plain", key="chat_dl", type="tertiary", help="Download chat")
+        with col_clear:
+            st.button(":material/delete:", key="chat_clear", type="tertiary", help="Clear chat",
+                      on_click=clear_chat)
+
+    box = st.container(height=CHAT_HEIGHT, border=False, key="chat_box")
+    with box:
+        if not messages:
+            hint = ("Ask anything about the selected data — totals, trends, top records, comparisons."
+                    if df is not None else "Select a data source to start asking questions.")
+            html_block(f'<div class="chat-empty">{hint}</div>')
+        for msg in messages:
+            render_message(msg)
+
+    question = st.chat_input("Ask a question about this data...", key="chat_input")
+    if df is not None and not question:
+        question = st.session_state.pop("pending_question", None)
+    if not question or not question.strip():
+        return
+    question = question.strip()
+
+    if df is None:
+        messages.append({"role": "user", "content": question})
+        route = route_message(question, messages[:-1], [])
+        if route["intent"] == INTENT_CHITCHAT:
+            # Small talk doesn't need data loaded — answer right away.
+            messages.append({"role": "assistant", "content": route.get("reply") or "Hi! How can I help you today?"})
+        else:
+            # A real data question: park it, ask the user to pick a source, answer it once loaded
+            st.session_state["pending_question"] = question
+            messages.append({"role": "assistant", "content": "I don't have any data loaded yet. Pick a view or a "
+                             "file from the left panel, and I'll answer your question right away."})
+        st.rerun()
+
+    history = list(messages)
+    messages.append({"role": "user", "content": question})
+    with box:
+        render_message(messages[-1])
+        try:
+            with st.chat_message("assistant", avatar=AI_AVATAR):
+                with st.spinner("Thinking..."):
+                    reply = respond(df, source_name, is_sql, question, history)
+            messages.append(reply)
+            st.rerun()
+        except Exception as e:
+            messages.pop()  # drop the unanswered question so it doesn't pollute the history
+            show_error("AI request failed", e)
+
+
+# ── Layout ────────────────────────────────────────────────────────
+load_css(BASE_DIR / "style.css")
+
+logo_b64 = base64.b64encode((BASE_DIR / "assets" / "kestra_logo.png").read_bytes()).decode()
+html_block(
+    '<div class="topbar"><div class="brand-row">'
+    f'<img class="brand-logo" src="data:image/png;base64,{logo_b64}" alt="Kestra Medical Technologies">'
+    '<span class="brand">InsightIQ</span>'
+    '<span class="brand-sub">Data Insights Assistant</span>'
+    '</div></div>'
+)
+
+left, middle, right = st.columns([1.1, 2.3, 1.7], gap="medium")
+with left:
+    with st.container(height=PANEL_HEIGHT, border=True, key="panel_sources"):
+        folder_files = render_sources()
+with middle:
+    with st.container(height=PANEL_HEIGHT, border=True, key="panel_summary"):
+        render_overview(folder_files)
+with right:
+    with st.container(height=PANEL_HEIGHT, border=True, key="panel_chat"):
+        render_chat()

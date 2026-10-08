@@ -191,6 +191,8 @@ Provide:
 4. Overall data quality score out of 10
 Use ONLY the numbers provided above.
 """,
+        max_tokens=2000,  # same truncation risk as generate_summary
+        reasoning_effort="low",
     )
 
 
@@ -251,7 +253,10 @@ Include:
 4. Important highlights
 Keep to 6-8 bullet points. Use only numbers from the stats above.
 """,
-        max_tokens=800,
+        # Low reasoning + a larger budget: gpt-oss draws its hidden "thinking" from max_tokens, and at
+        # 800 with default reasoning the summary was regularly cut off mid-sentence.
+        max_tokens=2000,
+        reasoning_effort="low",
     )
 
 

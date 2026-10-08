@@ -49,39 +49,6 @@ def chat(system: str, user: str, max_tokens: int = 1000, history: list | None = 
     return (response.choices[0].message.content or "").strip()
 
 
-def transcribe_audio(audio_bytes: bytes, filename: str = "audio.wav") -> str:
-    """Speech-to-text via Groq Whisper. Returns the transcribed text (may be empty)."""
-    result = get_client().audio.transcriptions.create(
-        model="whisper-large-v3",
-        file=(filename, audio_bytes),
-    )
-    return (result.text or "").strip()
-
-
-def text_to_speech(text: str, voice: str = "troy") -> tuple[bytes, str]:
-    """Text-to-speech. Returns (audio_bytes, mime_type).
-
-    Tries Groq's Orpheus TTS first. Falls back to gTTS (free, no API key, needs internet) if the Groq
-    model isn't usable on this account yet — e.g. its terms haven't been accepted at
-    https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english (org admin only).
-    """
-    try:
-        response = get_client().audio.speech.create(
-            model="canopylabs/orpheus-v1-english",
-            voice=voice,
-            input=text,
-            response_format="wav",
-        )
-        return response.read(), "audio/wav"
-    except Exception:
-        from io import BytesIO
-
-        from gtts import gTTS
-        buffer = BytesIO()
-        gTTS(text=text, lang="en").write_to_fp(buffer)
-        return buffer.getvalue(), "audio/mp3"
-
-
 def strip_code_fences(text: str) -> str:
     """Remove markdown fences the model sometimes adds despite instructions."""
     for fence in ("```python", "```sql", "```json", "```"):

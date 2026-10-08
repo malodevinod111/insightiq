@@ -1,0 +1,19 @@
+[theme]
+base = "light"
+primaryColor = "#1D4ED8"
+backgroundColor = "#F4F6FA"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#1E293B"
+linkColor = "#1D4ED8"
+borderColor = "#E2E8F0"
+dataframeBorderColor = "#E2E8F0"
+dataframeHeaderBackgroundColor = "#F8FAFC"
+font = "Plus Jakarta Sans:https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap, sans-serif"
+baseFontSize = 14
+baseRadius = "8px"
+buttonRadius = "6px"
+showWidgetBorder = true
+chartCategoricalColors = ["#1D4ED8", "#0EA5E9", "#64748B", "#14B8A6", "#6366F1"]
+
+[client]
+toolbarMode = "minimal"
