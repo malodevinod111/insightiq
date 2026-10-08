@@ -427,10 +427,11 @@ def render_chat() -> None:
 # ── Layout ────────────────────────────────────────────────────────
 load_css(BASE_DIR / "style.css")
 
-logo_b64 = base64.b64encode((BASE_DIR / "assets" / "kestra_logo.png").read_bytes()).decode()
+# Vector logo (Kestra's official header SVG), so it stays sharp on high-DPI screens
+logo_b64 = base64.b64encode((BASE_DIR / "assets" / "kestra_logo.svg").read_bytes()).decode()
 html_block(
     '<div class="topbar"><div class="brand-row">'
-    f'<img class="brand-logo" src="data:image/png;base64,{logo_b64}" alt="Kestra Medical Technologies">'
+    f'<img class="brand-logo" src="data:image/svg+xml;base64,{logo_b64}" alt="Kestra Medical Technologies">'
     '<span class="brand">InsightIQ</span>'
     '<span class="brand-sub">Data Insights Assistant</span>'
     '</div></div>'
